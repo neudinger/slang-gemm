@@ -1,0 +1,56 @@
+load("@rules_zig//zig:defs.bzl", "zig_test")
+
+zig_test(
+    name = "gemm_shader_correctness",
+    main = "gemm_shader_correctness.zig",
+    data = [
+        "//shaders:gemm_family_complex_f32_spv",
+        "//shaders:gemm_family_complex_f64_spv",
+        "//shaders:gemm_family_f16_bf16_tensor_spv",
+        "//shaders:gemm_family_f16_scalar_spv",
+        "//shaders:gemm_family_f32_tf32_spv",
+        "//shaders:gemm_family_f64_spv",
+        "//shaders:gemm_family_int8_int32_spv",
+        "//shaders:gemm_family_low_precision_packed_spv",
+        "//shaders:gemm_nvcoop2_f16_spv",
+    ],
+)
+
+zig_test(
+    name = "gemm_correctness",
+    main = "gemm_correctness.zig",
+    deps = ["//:gemm"],
+)
+
+zig_test(
+    name = "gemm_manifest",
+    main = "gemm_manifest.zig",
+    deps = [
+        "//:gemm",
+        "//:manifest",
+    ],
+)
+
+zig_test(
+    name = "gemm_classic_extended",
+    main = "gemm_classic_extended.zig",
+    deps = ["//:gemm"],
+)
+
+zig_test(
+    name = "gemm_cublas_correctness",
+    main = "gemm_cublas_correctness.zig",
+    deps = [
+        "//:cublas",
+        "//:gemm",
+    ],
+    zigopts = [
+        "-fllvm",
+        "-lc",
+    ],
+    linkopts = [
+        "-L/usr/local/cuda-13.1/lib64",
+        "-lcublas",
+        "-lcudart",
+    ],
+)

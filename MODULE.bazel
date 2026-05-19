@@ -1,0 +1,83 @@
+module(
+    name = "slang_gemm",
+)
+
+bazel_dep(name = "bazel_lib", version = "3.2.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_zig", version = "0.12.2")
+bazel_dep(name = "spirv_tools", version = "2026.1")
+
+vulkan_headers = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+vulkan_headers(
+    name = "vulkan_headers",
+    build_file_content = """
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "vulkan_headers",
+    hdrs = glob(["include/**/*.h"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["registry/vk.xml"])
+""",
+    sha256 = "666700236101d288dea8bb080c6f8039467cb1d29ea1e1aae6f93a819f4f9029",
+    strip_prefix = "Vulkan-Headers-015e25c3c91b70eb1a754d36fb14c4ba6ad9b0b9",
+    urls = ["https://github.com/KhronosGroup/Vulkan-Headers/archive/015e25c3c91b70eb1a754d36fb14c4ba6ad9b0b9.tar.gz"],
+)
+
+vulkan_zig = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+vulkan_zig(
+    name = "vulkan_zig",
+    build_file_content = """
+load("@rules_zig//zig:defs.bzl", "zig_binary")
+
+zig_binary(
+    name = "vulkan_zig_generator",
+    main = "src/main.zig",
+    srcs = glob(["src/**/*.zig"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "f2e246106029392d263f498826f5a29f8687eba8682535e18c571a5fe1c62382",
+    strip_prefix = "vulkan-zig-b496a6a561ffbbeb530b0f9ed4e059f88c0723a5",
+    urls = ["https://github.com/Snektron/vulkan-zig/archive/b496a6a561ffbbeb530b0f9ed4e059f88c0723a5.tar.gz"],
+)
+
+slang = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+slang(
+    name = "slang",
+    build_file_content = """
+exports_files(["bin/slangc"])
+
+filegroup(
+    name = "slang_runtime",
+    srcs = glob([
+        "bin/*.slang",
+        "lib/**",
+    ]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "ad614368d43492676abdab0cccac651733622715800f004c026640122d208148",
+    urls = ["https://github.com/shader-slang/slang/releases/download/v2026.8.1/slang-2026.8.1-linux-x86_64.tar.gz"],
+)
+
+cuda = use_repo_rule("//third_party/cuda:repositories.bzl", "cuda_sdk_repository")
+cuda(
+    name = "cuda_sdk",
+    cuda_path = "/usr/local/cuda-13.1",
+)
+
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.index(file = "//bazel:zig_index.json")
+zig.toolchain(
+    default = True,
+    zig_version = "0.16.0",
+)
+use_repo(zig, "zig_toolchains")
+
+register_toolchains("@rules_zig//zig/target:all")
+register_toolchains("@zig_toolchains//:all")

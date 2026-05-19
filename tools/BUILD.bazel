@@ -1,0 +1,4 @@
+exports_files([
+    "embed_spv.zig",
+    "emit_nvcoop2_spv.zig",
+])

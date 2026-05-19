@@ -1,0 +1,439 @@
+load("@rules_zig//zig:defs.bzl", "zig_library")
+
+genrule(
+    name = "gemm_nvcoop2_f16_spv",
+    srcs = ["gemm_nvcoop2_f16.slang"],
+    outs = ["gemm_nvcoop2_f16.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_nvcoop2_f16.slang) \
+    -DN_TILES=2 \
+    -DK_UNROLL=4 \
+    -target spirv \
+    -entry main \
+    -stage compute \
+    -capability cooperative_matrix_tensor_addressing+tensor_addressing+cooperative_matrix_2 \
+    -O3 \
+    -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = [
+        "@slang//:bin/slangc",
+        "@slang//:slang_runtime",
+        "@spirv_tools//:spirv-val",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f32_tf32_spv",
+    srcs = ["gemm_real_f32.slang", "gemm_common.slang"],
+    outs = ["gemm_family_f32_tf32_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_real_f32.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_nvcoop2_i8_spv",
+    srcs = ["gemm_nvcoop2_i8.slang"],
+    outs = ["gemm_nvcoop2_i8.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_nvcoop2_i8.slang) \
+    -DN_TILES=2 \
+    -DK_UNROLL=4 \
+    -target spirv \
+    -entry main \
+    -stage compute \
+    -capability cooperative_matrix_tensor_addressing+tensor_addressing+cooperative_matrix_2 \
+    -O3 \
+    -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = [
+        "@slang//:bin/slangc",
+        "@slang//:slang_runtime",
+        "@spirv_tools//:spirv-val",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_nvcoop2_i8_spv_zig",
+    srcs = [
+        ":gemm_nvcoop2_i8_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_nvcoop2_i8_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_nvcoop2_i8_spv)" "$@" "gemm_nvcoop2_i8_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_nvcoop2_i8_spv_words",
+    import_name = "gemm_nvcoop2_i8_spv",
+    main = ":gemm_nvcoop2_i8_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f32_tf32_spv_zig",
+    srcs = [
+        ":gemm_family_f32_tf32_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_f32_tf32_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_f32_tf32_spv)" "$@" "gemm_family_f32_tf32_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_f32_tf32_spv_words",
+    import_name = "gemm_family_f32_tf32_spv",
+    main = ":gemm_family_f32_tf32_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_nvcoop2_f16_spv_zig",
+    srcs = [
+        ":gemm_nvcoop2_f16_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_nvcoop2_f16_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_nvcoop2_f16_spv)" "$@" "gemm_nvcoop2_f16_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_nvcoop2_f16_spv_words",
+    import_name = "gemm_nvcoop2_f16_spv",
+    main = ":gemm_nvcoop2_f16_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_nvcoop2_f16_small_spv_gen",
+    srcs = ["//tools:emit_nvcoop2_spv.zig"],
+    outs = [
+        "gemm_nvcoop2_f16_small.spv",
+        "gemm_nvcoop2_f16_small_spv.zig",
+    ],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:emit_nvcoop2_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- --mode=f16-wide "$(@D)/gemm_nvcoop2_f16_small.spv" "$(@D)/gemm_nvcoop2_f16_small_spv.zig"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$(@D)/gemm_nvcoop2_f16_small.spv"
+""",
+    tools = ["@spirv_tools//:spirv-val"],
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "gemm_nvcoop2_f16_small_spv_words",
+    import_name = "gemm_nvcoop2_f16_small_spv",
+    main = ":gemm_nvcoop2_f16_small_spv.zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_nvcoop2_bf16_spv_gen",
+    srcs = ["//tools:emit_nvcoop2_spv.zig"],
+    outs = [
+        "gemm_nvcoop2_bf16.spv",
+        "gemm_nvcoop2_bf16_spv.zig",
+    ],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:emit_nvcoop2_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- --mode=bf16-wide "$(@D)/gemm_nvcoop2_bf16.spv" "$(@D)/gemm_nvcoop2_bf16_spv.zig"
+if $(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$(@D)/gemm_nvcoop2_bf16.spv"; then
+    :
+else
+    echo "warning: spirv-val does not yet accept the generated BF16 coop2 module for this toolchain" >&2
+fi
+""",
+    tools = ["@spirv_tools//:spirv-val"],
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "gemm_nvcoop2_bf16_spv_words",
+    import_name = "gemm_nvcoop2_bf16_spv",
+    main = ":gemm_nvcoop2_bf16_spv.zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f16_scalar_spv",
+    srcs = ["gemm_real_f16.slang", "gemm_common.slang"],
+    outs = ["gemm_family_f16_scalar_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_real_f16.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f16_scalar_spv_zig",
+    srcs = [
+        ":gemm_family_f16_scalar_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_f16_scalar_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_f16_scalar_spv)" "$@" "gemm_family_f16_scalar_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_f16_scalar_spv_words",
+    import_name = "gemm_family_f16_scalar_spv",
+    main = ":gemm_family_f16_scalar_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f64_spv",
+    srcs = ["gemm_real_f64.slang", "gemm_common.slang"],
+    outs = ["gemm_family_f64_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_real_f64.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_f64_spv_zig",
+    srcs = [
+        ":gemm_family_f64_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_f64_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_f64_spv)" "$@" "gemm_family_f64_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_f64_spv_words",
+    import_name = "gemm_family_f64_spv",
+    main = ":gemm_family_f64_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_complex_f32_spv",
+    srcs = ["gemm_complex_f32.slang", "gemm_common.slang"],
+    outs = ["gemm_family_complex_f32_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_complex_f32.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_complex_f32_spv_zig",
+    srcs = [
+        ":gemm_family_complex_f32_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_complex_f32_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_complex_f32_spv)" "$@" "gemm_family_complex_f32_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_complex_f32_spv_words",
+    import_name = "gemm_family_complex_f32_spv",
+    main = ":gemm_family_complex_f32_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_complex_f64_spv",
+    srcs = ["gemm_complex_f64.slang", "gemm_common.slang"],
+    outs = ["gemm_family_complex_f64_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_complex_f64.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_complex_f64_spv_zig",
+    srcs = [
+        ":gemm_family_complex_f64_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_complex_f64_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_complex_f64_spv)" "$@" "gemm_family_complex_f64_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_complex_f64_spv_words",
+    import_name = "gemm_family_complex_f64_spv",
+    main = ":gemm_family_complex_f64_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_int8_int32_spv",
+    srcs = ["gemm_integer_i32.slang", "gemm_common.slang"],
+    outs = ["gemm_family_int8_int32_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_integer_i32.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_int8_int32_spv_zig",
+    srcs = [
+        ":gemm_family_int8_int32_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_int8_int32_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_int8_int32_spv)" "$@" "gemm_family_int8_int32_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_int8_int32_spv_words",
+    import_name = "gemm_family_int8_int32_spv",
+    main = ":gemm_family_int8_int32_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_low_precision_packed_spv",
+    srcs = ["gemm_lowp_f32.slang", "gemm_common.slang"],
+    outs = ["gemm_family_low_precision_packed_spv.spv"],
+    cmd = """
+set -euo pipefail
+$(execpath @slang//:bin/slangc) $(location gemm_lowp_f32.slang) -target spirv -entry main -stage compute -O2 -o "$@"
+$(execpath @spirv_tools//:spirv-val) --target-env vulkan1.4 "$@"
+""",
+    tools = ["@slang//:bin/slangc", "@slang//:slang_runtime", "@spirv_tools//:spirv-val"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "gemm_family_low_precision_packed_spv_zig",
+    srcs = [
+        ":gemm_family_low_precision_packed_spv",
+        "//tools:embed_spv.zig",
+    ],
+    outs = ["gemm_family_low_precision_packed_spv.zig"],
+    cmd = """
+set -euo pipefail
+cache="$(@D)/zig-cache"
+$(ZIG_BIN) run $(location //tools:embed_spv.zig) \
+    --cache-dir "$$cache" \
+    --global-cache-dir "$$cache" \
+    -- "$(location :gemm_family_low_precision_packed_spv)" "$@" "gemm_family_low_precision_packed_spv"
+""",
+    toolchains = ["@rules_zig//zig:resolved_toolchain"],
+)
+
+zig_library(
+    name = "gemm_family_low_precision_packed_spv_words",
+    import_name = "gemm_family_low_precision_packed_spv",
+    main = ":gemm_family_low_precision_packed_spv_zig",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "gemm_family_complex_spv",
+    actual = ":gemm_family_complex_f32_spv",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "gemm_family_f16_bf16_tensor_spv",
+    actual = ":gemm_nvcoop2_f16_spv",
+    visibility = ["//visibility:public"],
+)

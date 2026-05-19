@@ -1,0 +1,83 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_library")
+
+genrule(
+    name = "vulkan_zig_binding",
+    srcs = ["@vulkan_headers//:registry/vk.xml"],
+    outs = ["vk.zig"],
+    cmd = "$(execpath @vulkan_zig//:vulkan_zig_generator) $(location @vulkan_headers//:registry/vk.xml) $@",
+    tools = ["@vulkan_zig//:vulkan_zig_generator"],
+)
+
+zig_library(
+    name = "vulkan",
+    import_name = "vulkan",
+    main = ":vulkan_zig_binding",
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "gemm",
+    import_name = "gemm",
+    main = "src/gemm.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "manifest",
+    import_name = "manifest",
+    main = "src/manifest.zig",
+    deps = [":gemm"],
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "vulkan_runner",
+    import_name = "vulkan_runner",
+    main = "src/vulkan_runner.zig",
+    deps = [
+        ":gemm",
+        ":manifest",
+        ":vulkan",
+        "//shaders:gemm_family_complex_f32_spv_words",
+        "//shaders:gemm_family_complex_f64_spv_words",
+        "//shaders:gemm_family_f16_scalar_spv_words",
+        "//shaders:gemm_family_f32_tf32_spv_words",
+        "//shaders:gemm_family_f64_spv_words",
+        "//shaders:gemm_family_int8_int32_spv_words",
+        "//shaders:gemm_family_low_precision_packed_spv_words",
+        "//shaders:gemm_nvcoop2_bf16_spv_words",
+        "//shaders:gemm_nvcoop2_f16_small_spv_words",
+        "//shaders:gemm_nvcoop2_f16_spv_words",
+        "//shaders:gemm_nvcoop2_i8_spv_words",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "cublas",
+    import_name = "cublas",
+    main = "src/cublas.zig",
+    deps = [":gemm"],
+    visibility = ["//visibility:public"],
+)
+
+zig_binary(
+    name = "gemm_perf",
+    main = "bench/gemm_perf.zig",
+    deps = [
+        ":cublas",
+        ":gemm",
+        ":manifest",
+        ":vulkan_runner",
+    ],
+    zigopts = [
+        "-fllvm",
+        "-lc",
+    ],
+    linkopts = [
+        "-L/usr/local/cuda-13.1/lib64",
+        "-lcublas",
+        "-lcudart",
+    ],
+    visibility = ["//visibility:public"],
+)
