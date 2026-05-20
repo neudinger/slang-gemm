@@ -48,6 +48,7 @@ zig_library(
         "//shaders:gemm_nvcoop2_bf16_spv_words",
         "//shaders:gemm_nvcoop2_f16_small_spv_words",
         "//shaders:gemm_nvcoop2_f16_spv_words",
+        "//shaders:gemm_nvcoop2_f32_spv_words",
         "//shaders:gemm_nvcoop2_i8_spv_words",
     ],
     visibility = ["//visibility:public"],

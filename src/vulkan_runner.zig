@@ -12,6 +12,7 @@ const lowp_f32_spv = @import("gemm_family_low_precision_packed_spv");
 const nvcoop2_bf16_spv = @import("gemm_nvcoop2_bf16_spv");
 const nvcoop2_f16_spv = @import("gemm_nvcoop2_f16_spv");
 const nvcoop2_f16_small_spv = @import("gemm_nvcoop2_f16_small_spv");
+const nvcoop2_f32_spv = @import("gemm_nvcoop2_f32_spv");
 const nvcoop2_i8_spv = @import("gemm_nvcoop2_i8_spv");
 
 pub const Result = struct {
@@ -222,6 +223,7 @@ pub fn benchSgemmF32BatchedCase(allocator: std.mem.Allocator, op_a: gemm.Op, op_
     if (m == 0 or n == 0 or k == 0 or iters == 0) return error.InvalidArgument;
     if (batch_count == 0) return error.InvalidArgument;
     if (m > std.math.maxInt(u32) or n > std.math.maxInt(u32) or k > std.math.maxInt(u32) or batch_count > std.math.maxInt(u32)) return error.InvalidArgument;
+    const coop2_candidate = try benchNvcoop2F32StridedBatchedOpCase(allocator, op_a, op_b, m, n, k, batch_count, iters, warmup, device_substr);
 
     var loader = Vulkan.open() catch |err| switch (err) {
         error.FileNotFound, error.SymbolNotFound => return null,
@@ -318,6 +320,97 @@ pub fn benchSgemmF32BatchedCase(allocator: std.mem.Allocator, op_a: gemm.Op, op_
         vk.QueryResultFlags{ .@"64_bit" = true, .wait_bit = true },
     ));
 
+    const elapsed_ticks = timestamps[1] - timestamps[0];
+    const elapsed_ns = @as(f64, @floatFromInt(elapsed_ticks)) * @as(f64, timestampPeriodNs(&loader, device.physical_device));
+    const ms = elapsed_ns / @as(f64, @floatFromInt(iters)) / 1.0e6;
+    const generic: Result = .{ .ms = ms, .tflops = tflops(m, n, k, ms) * @as(f64, @floatFromInt(batch_count)) };
+    if (coop2_candidate) |candidate| {
+        if (candidate.ms < generic.ms) return candidate;
+    }
+    return generic;
+}
+
+pub fn benchNvcoop2F32StridedBatchedOpCase(allocator: std.mem.Allocator, op_a: gemm.Op, op_b: gemm.Op, m: usize, n: usize, k: usize, batch_count: usize, iters: usize, warmup: usize, device_substr: ?[]const u8) !?Result {
+    if (m == 0 or n == 0 or k == 0 or batch_count == 0 or iters == 0) return error.InvalidArgument;
+    if (m > std.math.maxInt(u32) or n > std.math.maxInt(u32) or k > std.math.maxInt(u32) or batch_count > std.math.maxInt(u32)) return error.InvalidArgument;
+    if (m % 128 != 0 or n % 256 != 0 or k % 16 != 0) return null;
+
+    var loader = Vulkan.open() catch |err| switch (err) {
+        error.FileNotFound, error.SymbolNotFound => return null,
+        else => return err,
+    };
+    defer loader.close();
+    const instance = loader.createInstance() catch |err| switch (err) {
+        error.IncompatibleDriver => return null,
+        else => return err,
+    };
+    defer loader.instance_fns.dispatch.vkDestroyInstance.?(instance, null);
+    const selected = try selectPhysicalDevice(&loader, allocator, instance, device_substr);
+    requireNvcoop2F32(&loader, allocator, selected.physical_device) catch |err| switch (err) {
+        error.RequiredDeviceExtensionMissing, error.RequiredDeviceFeatureMissing, error.RequiredCoopMatrixPropertyMissing => return null,
+        else => return err,
+    };
+    var device = createNvcoop2F32Device(&loader, selected.physical_device, selected.queue_family) catch |err| switch (err) {
+        error.RequiredDeviceExtensionMissing, error.RequiredDeviceFeatureMissing => return null,
+        else => return err,
+    };
+    defer device.deinit();
+
+    const a_rows = storedRows(op_a, m, k);
+    const a_cols = storedCols(op_a, m, k);
+    const b_rows = storedRows(op_b, k, n);
+    const b_cols = storedCols(op_b, k, n);
+    const a_stride = a_rows * a_cols;
+    const b_stride = b_rows * b_cols;
+    const c_stride = m * n;
+    var a_stage = try createBuffer(&loader, &device, a_stride * batch_count * @sizeOf(f32), .{ .transfer_src_bit = true }, .{ .host_visible_bit = true, .host_coherent_bit = true }, true);
+    defer destroyBuffer(&device, a_stage);
+    var b_stage = try createBuffer(&loader, &device, b_stride * batch_count * @sizeOf(f32), .{ .transfer_src_bit = true }, .{ .host_visible_bit = true, .host_coherent_bit = true }, true);
+    defer destroyBuffer(&device, b_stage);
+    fill(a_stage.slice(f32), 0.1);
+    fill(b_stage.slice(f32), -0.2);
+
+    const a_dev = try createBuffer(&loader, &device, a_stage.byte_len, .{ .storage_buffer_bit = true, .transfer_dst_bit = true }, .{ .device_local_bit = true }, false);
+    defer destroyBuffer(&device, a_dev);
+    const b_dev = try createBuffer(&loader, &device, b_stage.byte_len, .{ .storage_buffer_bit = true, .transfer_dst_bit = true }, .{ .device_local_bit = true }, false);
+    defer destroyBuffer(&device, b_dev);
+    const c_dev = try createBuffer(&loader, &device, c_stride * batch_count * @sizeOf(f32), .{ .storage_buffer_bit = true, .transfer_src_bit = true }, .{ .device_local_bit = true }, false);
+    defer destroyBuffer(&device, c_dev);
+
+    const shader_module = try createShaderModule(&device, nvcoop2_f32_spv.words[0..]);
+    defer device.fns.dispatch.vkDestroyShaderModule.?(device.handle, shader_module, null);
+    const descriptor_layout = try createDescriptorSetLayout3(&device);
+    defer device.fns.dispatch.vkDestroyDescriptorSetLayout.?(device.handle, descriptor_layout, null);
+    const pipeline_layout = try createPipelineLayoutWithCoop2Push(&device, descriptor_layout);
+    defer device.fns.dispatch.vkDestroyPipelineLayout.?(device.handle, pipeline_layout, null);
+    const pipeline = try createPipeline(&device, pipeline_layout, shader_module);
+    defer device.fns.dispatch.vkDestroyPipeline.?(device.handle, pipeline, null);
+    const descriptor_pool = try createDescriptorPool3(&device);
+    defer device.fns.dispatch.vkDestroyDescriptorPool.?(device.handle, descriptor_pool, null);
+    const descriptor_set = try allocateDescriptorSet(&device, descriptor_pool, descriptor_layout);
+    updateDescriptorSet3(&device, descriptor_set, a_dev, b_dev, c_dev);
+
+    const command_pool = try createCommandPool(&device);
+    defer device.fns.dispatch.vkDestroyCommandPool.?(device.handle, command_pool, null);
+    const upload_cmd = try allocateCommandBuffer(&device, command_pool);
+    const warmup_cmd = try allocateCommandBuffer(&device, command_pool);
+    const timed_cmd = try allocateCommandBuffer(&device, command_pool);
+    const query_pool = try createTimestampQueryPool(&device);
+    defer device.fns.dispatch.vkDestroyQueryPool.?(device.handle, query_pool, null);
+
+    try recordUploadCommands(&device, upload_cmd, a_stage, a_dev, b_stage, b_dev);
+    try recordNvcoop2CommandsOp(&device, warmup_cmd, pipeline, pipeline_layout, descriptor_set, op_a, op_b, m, n, k, 128, 256, a_cols, b_cols, batch_count, a_stride, b_stride, c_stride, 1, .null_handle);
+    try recordNvcoop2CommandsOp(&device, timed_cmd, pipeline, pipeline_layout, descriptor_set, op_a, op_b, m, n, k, 128, 256, a_cols, b_cols, batch_count, a_stride, b_stride, c_stride, iters, query_pool);
+
+    const fence = try createFence(&device);
+    defer device.fns.dispatch.vkDestroyFence.?(device.handle, fence, null);
+    try requireTimestampQueue(&loader, &device);
+    try submitCommand(&device, upload_cmd, fence);
+    for (0..warmup) |_| try submitCommand(&device, warmup_cmd, fence);
+    try submitCommand(&device, timed_cmd, fence);
+
+    var timestamps = [_]u64{ 0, 0 };
+    try vkCheck(device.fns.dispatch.vkGetQueryPoolResults.?(device.handle, query_pool, 0, 2, @sizeOf(@TypeOf(timestamps)), &timestamps, @sizeOf(u64), vk.QueryResultFlags{ .@"64_bit" = true, .wait_bit = true }));
     const elapsed_ticks = timestamps[1] - timestamps[0];
     const elapsed_ns = @as(f64, @floatFromInt(elapsed_ticks)) * @as(f64, timestampPeriodNs(&loader, device.physical_device));
     const ms = elapsed_ns / @as(f64, @floatFromInt(iters)) / 1.0e6;
@@ -1248,6 +1341,51 @@ fn createDevice(loader: *Vulkan, physical_device: vk.PhysicalDevice, queue_famil
     return .{ .handle = handle, .fns = fns, .queue = queue, .physical_device = physical_device, .queue_family = queue_family, .supports_float64 = enabled_features.shader_float_64 == .true };
 }
 
+fn createNvcoop2F32Device(loader: *Vulkan, physical_device: vk.PhysicalDevice, queue_family: u32) !Device {
+    var priorities = [_]f32{1.0};
+    var queue_info: vk.DeviceQueueCreateInfo = std.mem.zeroes(vk.DeviceQueueCreateInfo);
+    queue_info.s_type = .device_queue_create_info;
+    queue_info.queue_family_index = queue_family;
+    queue_info.queue_count = 1;
+    queue_info.p_queue_priorities = priorities[0..].ptr;
+
+    var device_info: vk.DeviceCreateInfo = std.mem.zeroes(vk.DeviceCreateInfo);
+    device_info.s_type = .device_create_info;
+    device_info.queue_create_info_count = 1;
+    var queue_infos = [_]vk.DeviceQueueCreateInfo{queue_info};
+    device_info.p_queue_create_infos = queue_infos[0..].ptr;
+
+    var extensions = [_][*:0]const u8{
+        vk.extensions.khr_cooperative_matrix.name,
+        vk.extensions.nv_cooperative_matrix_2.name,
+    };
+    device_info.enabled_extension_count = extensions.len;
+    device_info.pp_enabled_extension_names = extensions[0..].ptr;
+
+    var coop_features: vk.PhysicalDeviceCooperativeMatrixFeaturesKHR = std.mem.zeroes(vk.PhysicalDeviceCooperativeMatrixFeaturesKHR);
+    coop_features.s_type = .physical_device_cooperative_matrix_features_khr;
+    coop_features.cooperative_matrix = .true;
+
+    var nvcoop2_features: vk.PhysicalDeviceCooperativeMatrix2FeaturesNV = std.mem.zeroes(vk.PhysicalDeviceCooperativeMatrix2FeaturesNV);
+    nvcoop2_features.s_type = .physical_device_cooperative_matrix_2_features_nv;
+    nvcoop2_features.cooperative_matrix_workgroup_scope = .true;
+    nvcoop2_features.cooperative_matrix_flexible_dimensions = .true;
+    nvcoop2_features.cooperative_matrix_tensor_addressing = .true;
+    nvcoop2_features.cooperative_matrix_block_loads = .true;
+    coop_features.p_next = &nvcoop2_features;
+    device_info.p_next = &coop_features;
+
+    var handle: vk.Device = .null_handle;
+    const create_result = loader.instance_fns.dispatch.vkCreateDevice.?(physical_device, &device_info, null, &handle);
+    if (create_result == .error_extension_not_present) return error.RequiredDeviceExtensionMissing;
+    if (create_result == .error_feature_not_present) return error.RequiredDeviceFeatureMissing;
+    try vkCheck(create_result);
+    const fns = vk.DeviceWrapper.load(handle, loader.instance_fns.dispatch.vkGetDeviceProcAddr.?);
+    var queue: vk.Queue = .null_handle;
+    fns.dispatch.vkGetDeviceQueue.?(handle, queue_family, 0, &queue);
+    return .{ .handle = handle, .fns = fns, .queue = queue, .physical_device = physical_device, .queue_family = queue_family, .supports_float64 = false };
+}
+
 fn createNvcoop2F16Device(loader: *Vulkan, physical_device: vk.PhysicalDevice, queue_family: u32) !Device {
     var priorities = [_]f32{1.0};
     var queue_info: vk.DeviceQueueCreateInfo = std.mem.zeroes(vk.DeviceQueueCreateInfo);
@@ -1408,6 +1546,72 @@ fn createNvcoop2I8Device(loader: *Vulkan, physical_device: vk.PhysicalDevice, qu
     var queue: vk.Queue = .null_handle;
     fns.dispatch.vkGetDeviceQueue.?(handle, queue_family, 0, &queue);
     return .{ .handle = handle, .fns = fns, .queue = queue, .physical_device = physical_device, .queue_family = queue_family, .supports_float64 = false };
+}
+
+fn requireNvcoop2F32(loader: *Vulkan, allocator: std.mem.Allocator, physical_device: vk.PhysicalDevice) !void {
+    var base_props: vk.PhysicalDeviceProperties = undefined;
+    loader.instance_fns.dispatch.vkGetPhysicalDeviceProperties.?(physical_device, &base_props);
+    if (base_props.vendor_id != 0x10de) return error.RequiredDeviceFeatureMissing;
+
+    var extension_count: u32 = 0;
+    try vkCheck(loader.instance_fns.dispatch.vkEnumerateDeviceExtensionProperties.?(physical_device, null, &extension_count, null));
+    const extensions = try allocator.alloc(vk.ExtensionProperties, extension_count);
+    defer allocator.free(extensions);
+    try vkCheck(loader.instance_fns.dispatch.vkEnumerateDeviceExtensionProperties.?(physical_device, null, &extension_count, extensions.ptr));
+    if (!hasDeviceExtension(extensions, vk.extensions.khr_cooperative_matrix.name) or !hasDeviceExtension(extensions, vk.extensions.nv_cooperative_matrix_2.name)) {
+        return error.RequiredDeviceExtensionMissing;
+    }
+
+    var nv2_features: vk.PhysicalDeviceCooperativeMatrix2FeaturesNV = std.mem.zeroes(vk.PhysicalDeviceCooperativeMatrix2FeaturesNV);
+    nv2_features.s_type = .physical_device_cooperative_matrix_2_features_nv;
+    var khr_features: vk.PhysicalDeviceCooperativeMatrixFeaturesKHR = std.mem.zeroes(vk.PhysicalDeviceCooperativeMatrixFeaturesKHR);
+    khr_features.s_type = .physical_device_cooperative_matrix_features_khr;
+    khr_features.p_next = &nv2_features;
+    var features2: vk.PhysicalDeviceFeatures2 = std.mem.zeroes(vk.PhysicalDeviceFeatures2);
+    features2.s_type = .physical_device_features_2;
+    features2.p_next = &khr_features;
+    loader.instance_fns.dispatch.vkGetPhysicalDeviceFeatures2.?(physical_device, &features2);
+    if (khr_features.cooperative_matrix != .true or
+        nv2_features.cooperative_matrix_workgroup_scope != .true or
+        nv2_features.cooperative_matrix_flexible_dimensions != .true or
+        nv2_features.cooperative_matrix_tensor_addressing != .true or
+        nv2_features.cooperative_matrix_block_loads != .true)
+    {
+        return error.RequiredDeviceFeatureMissing;
+    }
+
+    var nv2_props: vk.PhysicalDeviceCooperativeMatrix2PropertiesNV = std.mem.zeroes(vk.PhysicalDeviceCooperativeMatrix2PropertiesNV);
+    nv2_props.s_type = .physical_device_cooperative_matrix_2_properties_nv;
+    var properties2: vk.PhysicalDeviceProperties2 = std.mem.zeroes(vk.PhysicalDeviceProperties2);
+    properties2.s_type = .physical_device_properties_2;
+    properties2.p_next = &nv2_props;
+    loader.instance_fns.dispatch.vkGetPhysicalDeviceProperties2.?(physical_device, &properties2);
+    if (nv2_props.cooperative_matrix_workgroup_scope_max_workgroup_size < 256 or nv2_props.cooperative_matrix_flexible_dimensions_max_dimension < 256) {
+        return error.RequiredCoopMatrixPropertyMissing;
+    }
+
+    const get_props = loader.instance_fns.dispatch.vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV orelse return error.RequiredDeviceExtensionMissing;
+    var count: u32 = 0;
+    try vkCheck(get_props(physical_device, &count, null));
+    if (count == 0) return error.RequiredCoopMatrixPropertyMissing;
+    const props = try allocator.alloc(vk.CooperativeMatrixFlexibleDimensionsPropertiesNV, count);
+    defer allocator.free(props);
+    for (props) |*prop| {
+        prop.* = std.mem.zeroes(vk.CooperativeMatrixFlexibleDimensionsPropertiesNV);
+        prop.s_type = .cooperative_matrix_flexible_dimensions_properties_nv;
+    }
+    try vkCheck(get_props(physical_device, &count, props.ptr));
+    for (props[0..count]) |prop| {
+        if (128 % prop.m_granularity == 0 and 256 % prop.n_granularity == 0 and 16 % prop.k_granularity == 0 and
+            prop.a_type == .float32_khr and prop.b_type == .float32_khr and
+            prop.c_type == .float32_khr and prop.result_type == .float32_khr and
+            prop.saturating_accumulation == .false and prop.scope == .workgroup_khr and
+            prop.workgroup_invocations == 256)
+        {
+            return;
+        }
+    }
+    return error.RequiredCoopMatrixPropertyMissing;
 }
 
 fn requireNvcoop2F16(loader: *Vulkan, allocator: std.mem.Allocator, physical_device: vk.PhysicalDevice) !void {

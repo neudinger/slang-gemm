@@ -86,6 +86,7 @@ Or build specific shader families:
 bazel build //shaders:gemm_nvcoop2_f16_spv
 bazel build //shaders:gemm_nvcoop2_f16_small_spv_gen
 bazel build //shaders:gemm_nvcoop2_bf16_spv_gen
+bazel build //shaders:gemm_nvcoop2_f32_spv
 bazel build //shaders:gemm_family_f16_scalar_spv
 bazel build //shaders:gemm_family_f16_bf16_tensor_spv
 bazel build //shaders:gemm_family_f32_tf32_spv
@@ -239,7 +240,7 @@ have a Slang/Vulkan shader path wired in the benchmark runner.
 
 | cuBLAS API / Case | cuBLAS Reference | Slang Shader Path | Vulkan Dispatch | Current Status |
 | --- | --- | --- | --- | --- |
-| `cublasSgemm`, regular and checked 64-bit, real `N/T/C` | yes | `gemm_family_f32_tf32_spv` | wired | correctness/perf reporting; not tensor-core parity yet |
+| `cublasSgemm`, regular and checked 64-bit, real `N/T/C` | yes | `gemm_nvcoop2_f32_spv` candidate plus `gemm_family_f32_tf32_spv` fallback | wired best-of shader selector | correctness/perf reporting; FP32 coop2 is full FP32 on current stack, not cuBLAS TF32 parity |
 | `cublasDgemm`, regular and checked 64-bit | yes | `gemm_family_f64_spv` | wired | correctness/perf reporting |
 | `cublasCgemm`, regular and checked 64-bit | yes | `gemm_family_complex_f32_spv` | wired | correctness/perf reporting |
 | `cublasZgemm`, regular and checked 64-bit | yes | `gemm_family_complex_f64_spv` | wired | correctness/perf reporting |
@@ -250,7 +251,7 @@ have a Slang/Vulkan shader path wired in the benchmark runner.
 | `cublasGemmStridedBatchedEx`, FP16 inputs, FP32 output/compute, tile-compatible | yes | `gemm_nvcoop2_f16_spv` using `SV_GroupID.z` | wired optimized coop2 for all real `N/T/C` | RTX 5090, 4 batches old `N/N`: shader `118.17/139.15/144.45` TFLOP/s at `512/1024/2048`; cuBLAS `76.78/154.87/188.55`; ratios `0.650/1.113/1.305` |
 | `cublasGemmEx`, INT8 inputs, INT32 output/compute, `N/N`, tile-compatible | yes | `gemm_nvcoop2_i8_spv` | wired optimized coop2 for regular, batched, and strided Ex | strict timed path, but currently slower than cuBLAS on 256³ |
 | `cublasGemmEx`, INT8 inputs, INT32 output/compute, other ops | yes | `gemm_family_int8_int32_spv` | generic fallback | correctness/perf reporting; strict mode reports unsupported optimized ops as blockers |
-| `cublasGemmEx`, FP32 inputs/output with TF32 compute mode | yes | `gemm_family_f32_tf32_spv` | wired generic for regular, batched, and strided Ex | RTX 5090 SGEMM generic shader `2.04/1.08/1.03` TFLOP/s vs cuBLAS `21.47/47.59/66.52`; TF32 coop shader pending |
+| `cublasGemmEx`, FP32 inputs/output with TF32 compute mode | yes | `gemm_nvcoop2_f32_spv` candidate plus `gemm_family_f32_tf32_spv` fallback | wired best-of shader selector for regular, batched, and strided Ex | RTX 5090 256³ probe: FP32 coop2 compiles and dispatches, but reports about `0.36` TFLOP/s vs cuBLAS about `1.95`; true TF32 coop exposure is still the blocker |
 | Classic pointer-array batched GEMM (`*gemmBatched`) | yes | real/complex family shaders | wired through packed contiguous batch dispatch in the Vulkan runner | correctness/perf reporting |
 | `cublasGemmBatchedEx` pointer-array Ex | yes | FP16/BF16/FP32/INT8 family shaders | wired through packed contiguous batch dispatch in the Vulkan runner | correctness/perf reporting |
 | `cublasGemmStridedBatchedEx`, BF16 inputs, FP32 output/compute, `N/N`, tile-compatible | yes | `gemm_nvcoop2_bf16_spv_gen` using `SV_GroupID.z` | wired optimized coop2 | strict timed path; still subject to row-level perf gate |
